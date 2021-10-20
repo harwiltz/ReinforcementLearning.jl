@@ -65,12 +65,16 @@ run(ex)
 plot(ex.hook.rewards)
 savefig("assets/JuliaRL_BasicDQN_PendulumDiscrete.png") #hide
 
-# Watch a demo episode with the trained agent
-demo = Experiment(ex.policy,
-                  PendulumEnv(continuous=false, max_steps = 1000),
-                  StopWhenDone(),
-                  RolloutHook(plot, closeall),
-                  "DQN <-> Demo")
-run(demo)
+"""
+## Watch a demo episode with the trained agent
+
+    demo = Experiment(ex.policy,
+                      PendulumEnv(continuous=false, max_steps = 1000),
+                      StopWhenDone(),
+                      RolloutHook(plot, closeall),
+                      "DQN <-> Demo")
+    run(demo)
+
+"""
 
 # ![](assets/JuliaRL_BasicDQN_PendulumDiscrete.png)

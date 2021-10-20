@@ -129,7 +129,7 @@ function plot(env::PendulumEnv; kwargs...)
     arrow_radius = 0.2
     torque = env.action
     xs = LinRange(2*arrow_radius/3, -2*arrow_radius/3, 100)
-    if torque < 0
+    if torque > 0
         xs = -xs
     end
     ys = sqrt.(arrow_radius^2 .- xs.^2)
