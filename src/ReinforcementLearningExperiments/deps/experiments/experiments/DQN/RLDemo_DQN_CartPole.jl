@@ -6,7 +6,6 @@
 # ---
 
 #+ tangle=true
-using Plots
 using ReinforcementLearning
 using StableRNGs
 using Flux
@@ -55,20 +54,27 @@ function RL.Experiment(
         ),
     )
     stop_condition = StopAfterStep(10_000, is_show_progress=!haskey(ENV, "CI"))
-    hook = ComposedHook(TotalRewardPerEpisode(),
-                        PeriodicRolloutHook(() -> env_fn(rng),
-                                            env -> plot(env),
-                                            () -> Plots.closeall();
-                                            n = 20))
+    hook = TotalRewardPerEpisode()
     Experiment(policy, env, stop_condition, hook, "# DQN <-> CartPole")
 end
 
 #+ tangle=false
 using Plots
+using ReinforcementLearning
+using ReinforcementLearningEnvironments
+
 pyplot() #hide
 ex = E`RLDemo_DQN_CartPole`
 run(ex)
 plot(ex.hook.rewards)
 savefig("assets/RLDemo_DQN_CartPole.png") #hide
+
+demo = Experiment(ex.policy,
+                  CartPoleEnv(),
+                  StopWhenDone(),
+                  RolloutHook(plot, closeall),
+                  "DQN <-> Demo")
+
+run(demo)
 
 # ![](assets/JuliaRL_BasicDQN_CartPole.png)

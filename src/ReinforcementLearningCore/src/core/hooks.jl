@@ -317,7 +317,7 @@ struct DoOnExit{F} <: AbstractHook
 end
 
 function (h::DoOnExit)(::PostExperimentStage, agent, env)
-    h.f()
+    h.f(agent, env)
 end
 
 """
