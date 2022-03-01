@@ -1,9 +1,9 @@
-export IQNLearner
+export FQFLearner, FullyParameterizedQuantileNet
 
 """
-    IQNLearner(;kwargs)
+    FQFLearner(;kwargs)
 
-See [paper](https://arxiv.org/abs/1806.06923)
+See [paper](https://arxiv.org/abs/1911.02140)
 
 # Keyword arguments
 - `approximator`, a [`ImplicitQuantileNet`](@ref)
@@ -26,7 +26,7 @@ See [paper](https://arxiv.org/abs/1806.06923)
 - `rng = Random.GLOBAL_RNG`,
 - `device_seed = nothing`,
 """
-mutable struct IQNLearner{A,T,R,D} <: AbstractImplicitQuantileLearner
+mutable struct FQFLearner{A,T,R,D} <: AbstractImplicitQuantileLearner
     approximator::A
     target_approximator::T
     sampler::NStepBatchSampler
@@ -46,7 +46,7 @@ mutable struct IQNLearner{A,T,R,D} <: AbstractImplicitQuantileLearner
     loss::Float32
 end
 
-function IQNLearner(;
+function FQFLearner(;
     approximator,
     target_approximator,
     κ = 1.0f0,
@@ -83,7 +83,7 @@ function IQNLearner(;
         stack_size = stack_size,
         batch_size = batch_size,
     )
-    IQNLearner(
+    FQFLearner(
         approximator,
         target_approximator,
         sampler,
@@ -104,7 +104,28 @@ function IQNLearner(;
     )
 end
 
-function RLBase.update!(learner::IQNLearner, batch::NamedTuple)
+function (learner::FQFLearner)(env)
+    s = send_to_device(device(learner), state(env))
+    s = Flux.unsqueeze(s, ndims(s) + 1)
+    τ = rand(learner.device_rng, Float32, learner.K, 1)
+    τₑₘ = embed(τ, learner.Nₑₘ)
+    quantiles = learner.approximator(s, τₑₘ)
+    vec(sum(quantiles .* weights(τ); dims = 2)) |> send_to_host
+end
+
+function quantile_weights(τ::Float32)
+    if ndims(τ) == 1
+        τ = Flux.unsqueeze(τ, 2)
+    end
+    bdim = size(τ)[end]
+    c₁ = Flux.unsqueeze(ones(bdim), 1)
+    c₀ = Flux.unsqueeze(zeros(bdim), 1)
+    τᵣ = vcat(τ, c₁)
+    τₗ = vcat(c₀, τ)
+    τᵣ - τₗ
+end
+
+function RLBase.update!(learner::FQFLearner, batch::NamedTuple)
     Z = learner.approximator
     Zₜ = learner.target_approximator
     N = learner.N
@@ -121,8 +142,8 @@ function RLBase.update!(learner::IQNLearner, batch::NamedTuple)
     τ′ = rand(learner.device_rng, Float32, N′, batch_size)  # TODO: support β distribution
     τₑₘ′ = embed(τ′, Nₑₘ)
     zₜ = Zₜ(s′, τₑₘ′)
-    weights = quantile_weights(learner, τ′)
-    avg_zₜ = sum(zₜ .* weights, dims = 2)
+    w = weights(τ')
+    avg_zₜ = sum(zₜ .* w, dims = 2)
 
     if haskey(batch, :next_legal_actions_mask)
         masked_value = fill(typemin(Float32), size(batch.next_legal_actions_mask))
