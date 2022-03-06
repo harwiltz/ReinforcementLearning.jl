@@ -1,4 +1,4 @@
-export FQFLearner, FullyParameterizedQuantileNet
+export FQFLearner 
 
 """
     FQFLearner(;kwargs)
@@ -26,9 +26,10 @@ See [paper](https://arxiv.org/abs/1911.02140)
 - `rng = Random.GLOBAL_RNG`,
 - `device_seed = nothing`,
 """
-mutable struct FQFLearner{A,T,R,D} <: AbstractImplicitQuantileLearner
+mutable struct FQFLearner{A,T,F,R,D} <: AbstractImplicitQuantileLearner
     approximator::A
     target_approximator::T
+    fraction_proposer::F
     sampler::NStepBatchSampler
     κ::Float32
     N::Int
@@ -107,7 +108,7 @@ end
 function (learner::FQFLearner)(env)
     s = send_to_device(device(learner), state(env))
     s = Flux.unsqueeze(s, ndims(s) + 1)
-    τ = rand(learner.device_rng, Float32, learner.K, 1)
+    τ = learner.fraction_proposer(s)
     τₑₘ = embed(τ, learner.Nₑₘ)
     quantiles = learner.approximator(s, τₑₘ)
     vec(sum(quantiles .* weights(τ); dims = 2)) |> send_to_host
@@ -128,6 +129,7 @@ end
 function RLBase.update!(learner::FQFLearner, batch::NamedTuple)
     Z = learner.approximator
     Zₜ = learner.target_approximator
+    P = learner.fraction_proposer
     N = learner.N
     N′ = learner.N′
     Nₑₘ = learner.Nₑₘ
@@ -139,10 +141,10 @@ function RLBase.update!(learner::FQFLearner, batch::NamedTuple)
     s, r, t, s′ =
         (send_to_device(D, batch[x]) for x in (:state, :reward, :terminal, :next_state))
 
-    τ′ = rand(learner.device_rng, Float32, N′, batch_size)  # TODO: support β distribution
-    τₑₘ′ = embed(τ′, Nₑₘ)
+    τ′ = P(s′)  # TODO: support β distribution
+    τₑₘ′ = embed(learner, τ′)
     zₜ = Zₜ(s′, τₑₘ′)
-    w = weights(τ')
+    w = quantile_weights(learner, τ′)
     avg_zₜ = sum(zₜ .* w, dims = 2)
 
     if haskey(batch, :next_legal_actions_mask)
@@ -158,10 +160,6 @@ function RLBase.update!(learner::FQFLearner, batch::NamedTuple)
         reshape(r, 1, batch_size) .+
         learner.sampler.γ * reshape(1 .- t, 1, batch_size) .* qₜ  # reshape to allow broadcast
 
-    τ = rand(learner.device_rng, Float32, N, batch_size)
-    τₑₘ = embed(τ, Nₑₘ)
-    a = CartesianIndex.(repeat(batch.action, inner = N), 1:(N*batch_size))
-
     is_use_PER = haskey(batch, :priority)  # is use Prioritized Experience Replay
     if is_use_PER
         updated_priorities = Vector{Float32}(undef, batch_size)
@@ -171,6 +169,10 @@ function RLBase.update!(learner::FQFLearner, batch::NamedTuple)
     end
 
     gs = Zygote.gradient(Flux.params(Z)) do
+        τ = P(s)
+        τₑₘ = embed(learner, τ)
+        a = CartesianIndex.(repeat(batch.action, inner = N), 1:(N*batch_size))
+
         z = flatten_batch(Z(s, τₑₘ))
         q = z[a]
 
@@ -202,6 +204,21 @@ function RLBase.update!(learner::FQFLearner, batch::NamedTuple)
     end
 
     update!(Z, gs)
+
+    τ̂ = let
+        c₁ = Flux.unsqueeze(ones(bdim), 1)
+        c₀ = Flux.unsqueeze(zeros(bdim), 1)
+        τᵣ = vcat(τ, c₁)
+        τₗ = vcat(c₀, τ)
+        (τₗ + τᵣ) / 2f0
+    end
+
+    τₑₘ = embed(learner, τ)
+    τ̂ₑₘ = embed(learner, τ̂)
+    τ̂ₑₘₗ = τ̂ₑₘ[1:end - 1, :]
+    τ̂ₑₘᵣ = τ̂ₑₘ[2:end, :]
+    @. quantile_grads = 2 * learner(s, τₑₘ) - learner(s, τ̂ₑₘₗ) - learner(s, τ̂ₑₘᵣ)
+    update!(P, quantile_grads .* jacobian(P, s))
 
     is_use_PER ? updated_priorities : nothing
 end

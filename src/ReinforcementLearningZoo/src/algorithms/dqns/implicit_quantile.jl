@@ -1,5 +1,7 @@
 export AbstractImplicitQuantileLearner, ImplicitQuantileNet
 
+using OMEinsum
+
 abstract type AbstractImplicitQuantileLearner <: AbstractLearner end
 
 Flux.functor(x::AbstractImplicitQuantileLearner) =
@@ -15,17 +17,21 @@ function (learner::AbstractImplicitQuantileLearner)(env)
     s = send_to_device(device(learner), state(env))
     s = Flux.unsqueeze(s, ndims(s) + 1)
     τ = rand(learner.device_rng, Float32, learner.K, 1)
-    τₑₘ = embed(τ, learner.Nₑₘ)
+    τₑₘ = embed(learner, τ)
     quantiles = learner.approximator(s, τₑₘ)
     weights = quantile_weights(learner, τ)
-    vec(sum(quantiles .* weights; dims = 2)) |> send_to_host
+    q_values = ein"ijk,jk->ik"(quantiles, weights)
+    vec(q_values) |> send_to_host
 end
 
-function quantile_weights(learner::AbstractImplicitQuantileLearner, τ: Union{Vector{Float}, Matrix{Float}})
-    ones(size(τ)) / size(τ)[1]
+function quantile_weights(learner::AbstractImplicitQuantileLearner,
+                          τ::Union{Vector{Float32}, Matrix{Float32}})
+    ones(Float32, size(τ)) / size(τ)[1]
 end
 
-embed(x, Nₑₘ) = cos.(Float32(π) .* (1:Nₑₘ) .* reshape(x, 1, :))
+function embed(learner::AbstractImplicitQuantileLearner, τ)
+    cos.(Float32(π) .* (1:learner.Nₑₘ) .* reshape(τ, 1, :))
+end
 
 """
     ImplicitQuantileNet(;ψ, ϕ, header)

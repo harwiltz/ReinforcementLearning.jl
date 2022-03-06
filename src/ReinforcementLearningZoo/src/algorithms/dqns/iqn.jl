@@ -119,10 +119,11 @@ function RLBase.update!(learner::IQNLearner, batch::NamedTuple)
         (send_to_device(D, batch[x]) for x in (:state, :reward, :terminal, :next_state))
 
     τ′ = rand(learner.device_rng, Float32, N′, batch_size)  # TODO: support β distribution
-    τₑₘ′ = embed(τ′, Nₑₘ)
+    τₑₘ′ = embed(learner, τ′)
     zₜ = Zₜ(s′, τₑₘ′)
     weights = quantile_weights(learner, τ′)
-    avg_zₜ = sum(zₜ .* weights, dims = 2)
+    # avg_zₜ = sum(zₜ .* weights, dims = 2)
+    @ein avg_zₜ[a,b] := zₜ[a,k,b] * weights[k,b];
 
     if haskey(batch, :next_legal_actions_mask)
         masked_value = fill(typemin(Float32), size(batch.next_legal_actions_mask))
@@ -130,7 +131,7 @@ function RLBase.update!(learner::IQNLearner, batch::NamedTuple)
         avg_zₜ .+= send_to_device(D, masked_value)
     end
 
-    aₜ = argmax(avg_zₜ, dims = 1)
+    aₜ = argmax(Flux.unsqueeze(avg_zₜ, 2), dims = 1)
     aₜ = aₜ .+ typeof(aₜ)(CartesianIndices((0:0, 0:N′-1, 0:0)))
     qₜ = reshape(zₜ[aₜ], :, batch_size)
     target =
@@ -138,7 +139,7 @@ function RLBase.update!(learner::IQNLearner, batch::NamedTuple)
         learner.sampler.γ * reshape(1 .- t, 1, batch_size) .* qₜ  # reshape to allow broadcast
 
     τ = rand(learner.device_rng, Float32, N, batch_size)
-    τₑₘ = embed(τ, Nₑₘ)
+    τₑₘ = embed(learner, τ)
     a = CartesianIndex.(repeat(batch.action, inner = N), 1:(N*batch_size))
 
     is_use_PER = haskey(batch, :priority)  # is use Prioritized Experience Replay

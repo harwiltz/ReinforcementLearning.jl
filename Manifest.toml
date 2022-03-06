@@ -2,6 +2,11 @@
 
 julia_version = "1.7.1"
 manifest_format = "2.0"
+[[AbstractFFTs]]
+deps = ["ChainRulesCore", "LinearAlgebra"]
+git-tree-sha1 = "6f1d9bc1c08f9f4a8fa92e3ea3cb50153a1b40d4"
+uuid = "621f4979-c628-5d54-868e-fcf4e3e8185c"
+version = "1.1.0"
 
 [[AbstractFFTs]]
 deps = ["ChainRulesCore", "LinearAlgebra"]
@@ -503,7 +508,7 @@ uuid = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 deps = ["Libdl", "Random", "RandomNumbers"]
 git-tree-sha1 = "0e8b146557ad1c6deb1367655e052276690e71a3"
 uuid = "74087812-796a-5b5d-8853-05524746bad3"
-version = "1.4.2"
+version = "1.5.0"
 
 [[deps.RandomNumbers]]
 deps = ["Random", "Requires"]
@@ -542,7 +547,7 @@ version = "0.6.12"
 
 [[deps.ReinforcementLearningZoo]]
 deps = ["AbstractTrees", "CUDA", "CircularArrayBuffers", "DataStructures", "Dates", "Distributions", "Flux", "IntervalSets", "LinearAlgebra", "Logging", "MacroTools", "Random", "ReinforcementLearningBase", "ReinforcementLearningCore", "Setfield", "Statistics", "StatsBase", "StructArrays", "Zygote"]
-path = "src/ReinforcementLearningZoo"
+path = "/home/harwiltz/.julia/dev/ReinforcementLearning/src/ReinforcementLearningZoo"
 uuid = "d607f57d-ee1e-4ba7-bcf2-7734c1e31854"
 version = "0.5.9"
 
