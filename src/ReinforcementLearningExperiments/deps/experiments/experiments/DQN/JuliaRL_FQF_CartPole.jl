@@ -30,7 +30,7 @@ function RL.Experiment(
     n_hidden = 64
     κ = 1.0f0
 
-    n_atoms = 32
+    n_atoms = 8
 
     agent = Agent(
         policy = QBasedPolicy(
@@ -40,10 +40,8 @@ function RL.Experiment(
                 fraction_embedder = Dense(Nₑₘ, n_hidden, relu; init = init),
                 optimizer = ADAM(0.001),
                 κ = κ,
-                N = 8,
-                N′ = 8,
+                N = n_atoms,
                 Nₑₘ = Nₑₘ,
-                K = n_atoms,
                 γ = 0.99f0,
                 stack_size = nothing,
                 batch_size = 32,

@@ -12,9 +12,7 @@ See [paper](https://arxiv.org/abs/1911.02140)
 - `target_approximator`, a [`ImplicitQuantileNet`](@ref), must have the same structure as `approximator`
 - `κ = 1.0f0`,
 - `N = 32`,
-- `N′ = 32`,
 - `Nₑₘ = 64`,
-- `K = 32`,
 - `γ = 0.99f0`,
 - `stack_size = 4`,
 - `batch_size = 32`,
@@ -35,9 +33,7 @@ mutable struct FQFLearner{A,T,F,R,D} <: AbstractImplicitQuantileLearner
     sampler::NStepBatchSampler
     κ::Float32
     N::Int
-    N′::Int
     Nₑₘ::Int
-    K::Int
     min_replay_history::Int
     update_freq::Int
     target_update_freq::Int
@@ -55,7 +51,7 @@ function FQFLearner(
     fraction_embedder,
     optimizer,
     fraction_proposal_optimizer = nothing,
-    n_atoms = 32,
+    N = 32,
     rng = Random.GLOBAL_RNG,
     init_fn = glorot_uniform,
     kwargs...
@@ -63,9 +59,9 @@ function FQFLearner(
     na = length(action_space(env))
     latent_size = size(Flux.modules(state_embedder)[end].weight)[1]
     header = Dense(latent_size, na, init = init_fn(rng))
-    fraction_proposer = Chain(Dense(latent_size, n_atoms + 1, sigmoid, init = init_fn(rng)),
+    fraction_proposer = Chain(Dense(latent_size, N + 1, sigmoid, init = init_fn(rng)),
                               x -> cumsum(x; dims = 1),
-                              x -> x[1:n_atoms,:] ./ x[end:end,:]) |> gpu
+                              x -> x[1:N,:] ./ x[end:end,:]) |> gpu
     approximator = NeuralNetworkApproximator(model = ImplicitQuantileNet(state_embedder,
                                                                          fraction_embedder,
                                                                          header) |> gpu,
@@ -79,6 +75,7 @@ function FQFLearner(
         target_approximator = approximator,
         fraction_proposer = fraction_proposer_approximator,
         rng = rng,
+        N = N,
         kwargs...
     )
 end
@@ -89,9 +86,7 @@ function FQFLearner(;
     fraction_proposer,
     κ = 1.0f0,
     N = 32,
-    N′ = 32,
     Nₑₘ = 64,
-    K = 32,
     γ = 0.99f0,
     stack_size = 4,
     batch_size = 32,
@@ -129,9 +124,7 @@ function FQFLearner(;
         sampler,
         κ,
         N,
-        N′,
         Nₑₘ,
-        K,
         min_replay_history,
         update_freq,
         target_update_freq,
@@ -173,7 +166,6 @@ function RLBase.update!(learner::FQFLearner, batch::NamedTuple)
     Zₜ = learner.target_approximator
     P = learner.fraction_proposer
     N = learner.N
-    N′ = learner.N′
     Nₑₘ = learner.Nₑₘ
     κ = learner.κ
     β = learner.β_priority
@@ -197,7 +189,7 @@ function RLBase.update!(learner::FQFLearner, batch::NamedTuple)
     end
 
     aₜ = argmax(Flux.unsqueeze(avg_zₜ, 2), dims = 1)
-    aₜ = aₜ .+ typeof(aₜ)(CartesianIndices((0:0, 0:N′-1, 0:0)))
+    aₜ = aₜ .+ typeof(aₜ)(CartesianIndices((0:0, 0:N-1, 0:0)))
     qₜ = reshape(zₜ[aₜ], :, batch_size)
     target =
         reshape(r, 1, batch_size) .+
@@ -210,17 +202,18 @@ function RLBase.update!(learner::FQFLearner, batch::NamedTuple)
         weights ./= maximum(weights)
         weights = send_to_device(D, weights)
     end
+    
+    a = CartesianIndex.(repeat(batch.action, inner = N), 1:(N*batch_size))
 
     gs = Zygote.gradient(Flux.params(Z)) do
         ξ = Z(s)
         τ = P(ξ)
         τₑₘ = embed(learner, τ)
-        a = CartesianIndex.(repeat(batch.action, inner = N), 1:(N*batch_size))
 
         z = flatten_batch(Z(s, τₑₘ; features = ξ))
         q = z[a]
 
-        TD_error = reshape(target, N′, 1, batch_size) .- reshape(q, 1, N, batch_size)
+        TD_error = reshape(target, N, 1, batch_size) .- reshape(q, 1, N, batch_size)
         # can't apply huber_loss in RLCore directly here
         abs_error = abs.(TD_error)
         quadratic = min.(abs_error, κ)
@@ -249,7 +242,10 @@ function RLBase.update!(learner::FQFLearner, batch::NamedTuple)
 
     update!(Z, gs)
 
+    τ = s |> Z |> P
+
     τ̂ = let
+        bdim = size(τ)[end]
         c₁ = Flux.unsqueeze(ones(bdim), 1)
         c₀ = Flux.unsqueeze(zeros(bdim), 1)
         τᵣ = vcat(τ, c₁)
@@ -258,11 +254,15 @@ function RLBase.update!(learner::FQFLearner, batch::NamedTuple)
     end
 
     τₑₘ = embed(learner, τ)
-    τ̂ₑₘ = embed(learner, τ̂)
-    τ̂ₑₘₗ = τ̂ₑₘ[1:end - 1, :]
-    τ̂ₑₘᵣ = τ̂ₑₘ[2:end, :]
-    @. quantile_grads = 2 * learner(s, τₑₘ) - learner(s, τ̂ₑₘₗ) - learner(s, τ̂ₑₘᵣ)
-    update!(P, quantile_grads .* jacobian(P, s))
+    τ̂ₑₘₗ = embed(learner, τ̂[1:end-1,:])
+    τ̂ₑₘᵣ = embed(learner, τ̂[2:end,:])
+    ξ = Z(s)
+    z = flatten_batch(Z(s, τₑₘ; features = ξ))
+    zₗ = flatten_batch(Z(s, τ̂ₑₘₗ; features = ξ))
+    zᵣ = flatten_batch(Z(s, τ̂ₑₘᵣ; features = ξ))
+    quantile_grads = @. 2 * z[a] - zₗ[a] - zᵣ[a]
+    js = jacobian(() -> P(ξ), Flux.params(P))
+    update!(P, map(j -> j' * quantile_grads, js))
 
     is_use_PER ? updated_priorities : nothing
 end
