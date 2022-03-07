@@ -1,5 +1,7 @@
 export FQFLearner 
 
+using Random
+
 """
     FQFLearner(;kwargs)
 
@@ -47,9 +49,44 @@ mutable struct FQFLearner{A,T,F,R,D} <: AbstractImplicitQuantileLearner
     loss::Float32
 end
 
+function FQFLearner(
+    env;
+    state_embedder,
+    fraction_embedder,
+    optimizer,
+    fraction_proposal_optimizer = nothing,
+    n_atoms = 32,
+    rng = Random.GLOBAL_RNG,
+    init_fn = glorot_uniform,
+    kwargs...
+)
+    na = length(action_space(env))
+    latent_size = size(Flux.modules(state_embedder)[end].weight)[1]
+    header = Dense(latent_size, na, init = init_fn(rng))
+    fraction_proposer = Chain(Dense(latent_size, n_atoms + 1, sigmoid, init = init_fn(rng)),
+                              x -> cumsum(x; dims = 1),
+                              x -> x[1:n_atoms] ./ max(x...)) |> gpu
+    approximator = NeuralNetworkApproximator(model = ImplicitQuantileNet(state_embedder,
+                                                                         fraction_embedder,
+                                                                         header) |> gpu,
+                                             optimizer = optimizer)
+    fpo = isnothing(fraction_proposal_optimizer) ? optimizer : fraction_proposal_optimizer
+    fraction_proposer_approximator = NeuralNetworkApproximator(model = fraction_proposer,
+                                                               optimizer = fpo)
+
+    FQFLearner(;
+        approximator = approximator,
+        target_approximator = approximator,
+        fraction_proposer = fraction_proposer_approximator,
+        rng = rng,
+        kwargs...
+    )
+end
+
 function FQFLearner(;
     approximator,
     target_approximator,
+    fraction_proposer,
     κ = 1.0f0,
     N = 32,
     N′ = 32,
@@ -84,9 +121,11 @@ function FQFLearner(;
         stack_size = stack_size,
         batch_size = batch_size,
     )
+    
     FQFLearner(
         approximator,
         target_approximator,
+        fraction_proposer,
         sampler,
         κ,
         N,
@@ -108,21 +147,24 @@ end
 function (learner::FQFLearner)(env)
     s = send_to_device(device(learner), state(env))
     s = Flux.unsqueeze(s, ndims(s) + 1)
-    τ = learner.fraction_proposer(s)
-    τₑₘ = embed(τ, learner.Nₑₘ)
-    quantiles = learner.approximator(s, τₑₘ)
-    vec(sum(quantiles .* weights(τ); dims = 2)) |> send_to_host
+    state_embedding = learner.approximator(s)
+    τ = learner.fraction_proposer(state_embedding)
+    τₑₘ = embed(learner, τ)
+    quantiles = learner.approximator(s, τₑₘ; features = state_embedding)
+    weights = quantile_weights(learner, τ)
+    @ein q_values[i,k] := quantiles[i,j,k] * weights[j,k];
+    vec(q_values) |> send_to_host
 end
 
-function quantile_weights(τ::Float32)
+function quantile_weights(learner::FQFLearner, τ::Vector{Float32})
     if ndims(τ) == 1
         τ = Flux.unsqueeze(τ, 2)
     end
     bdim = size(τ)[end]
-    c₁ = Flux.unsqueeze(ones(bdim), 1)
-    c₀ = Flux.unsqueeze(zeros(bdim), 1)
-    τᵣ = vcat(τ, c₁)
-    τₗ = vcat(c₀, τ)
+    c₁ = Flux.unsqueeze(ones(Float32, bdim), 1)
+    c₀ = Flux.unsqueeze(zeros(Float32, bdim), 1)
+    τᵣ = vcat(τ[2:end], c₁)
+    τₗ = vcat(c₀, τ[1:end - 1])
     τᵣ - τₗ
 end
 

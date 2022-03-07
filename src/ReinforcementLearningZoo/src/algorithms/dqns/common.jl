@@ -2,7 +2,7 @@
 # some common components for Prioritized Experience Replay based methods
 #####
 
-const PERLearners = Union{PrioritizedDQNLearner,RainbowLearner,IQNLearner}
+const PERLearners = Union{PrioritizedDQNLearner,RainbowLearner,IQNLearner,FQFLearner}
 
 function RLBase.update!(learner::Union{DQNLearner,QRDQNLearner,REMDQNLearner,PERLearners}, t::AbstractTrajectory)
     length(t[:terminal]) - learner.sampler.n <= learner.min_replay_history && return

@@ -55,8 +55,12 @@ end
 
 Flux.@functor ImplicitQuantileNet
 
-function (net::ImplicitQuantileNet)(s, emb)
-    features = net.ψ(s)  # (n_feature, batch_size)
+function (net::ImplicitQuantileNet)(s)
+    net.ψ(s)
+end
+
+function (net::ImplicitQuantileNet)(s, emb; features = nothing)
+    features = isnothing(features) ? net(s) : features # (n_feature, batch_size)
     emb_aligned = net.ϕ(emb)  # (n_feature, N * batch_size)
     merged =
         Flux.unsqueeze(features, 2) .*
