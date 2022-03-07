@@ -65,7 +65,7 @@ function FQFLearner(
     header = Dense(latent_size, na, init = init_fn(rng))
     fraction_proposer = Chain(Dense(latent_size, n_atoms + 1, sigmoid, init = init_fn(rng)),
                               x -> cumsum(x; dims = 1),
-                              x -> x[1:n_atoms] ./ max(x...)) |> gpu
+                              x -> x[1:n_atoms,:] ./ x[end:end,:]) |> gpu
     approximator = NeuralNetworkApproximator(model = ImplicitQuantileNet(state_embedder,
                                                                          fraction_embedder,
                                                                          header) |> gpu,
@@ -183,11 +183,12 @@ function RLBase.update!(learner::FQFLearner, batch::NamedTuple)
     s, r, t, s′ =
         (send_to_device(D, batch[x]) for x in (:state, :reward, :terminal, :next_state))
 
-    τ′ = P(s′)  # TODO: support β distribution
+    ξ′ = Zₜ(s′)
+    τ′ = P(ξ′)  # TODO: support β distribution
     τₑₘ′ = embed(learner, τ′)
-    zₜ = Zₜ(s′, τₑₘ′)
+    zₜ = Zₜ(s′, τₑₘ′; features = ξ′)
     w = quantile_weights(learner, τ′)
-    avg_zₜ = sum(zₜ .* w, dims = 2)
+    @ein avg_zₜ[i,k] := zₜ[i,j,k] * w[j,k];
 
     if haskey(batch, :next_legal_actions_mask)
         masked_value = fill(typemin(Float32), size(batch.next_legal_actions_mask))
@@ -195,7 +196,7 @@ function RLBase.update!(learner::FQFLearner, batch::NamedTuple)
         avg_zₜ .+= send_to_device(D, masked_value)
     end
 
-    aₜ = argmax(avg_zₜ, dims = 1)
+    aₜ = argmax(Flux.unsqueeze(avg_zₜ, 2), dims = 1)
     aₜ = aₜ .+ typeof(aₜ)(CartesianIndices((0:0, 0:N′-1, 0:0)))
     qₜ = reshape(zₜ[aₜ], :, batch_size)
     target =
@@ -211,11 +212,12 @@ function RLBase.update!(learner::FQFLearner, batch::NamedTuple)
     end
 
     gs = Zygote.gradient(Flux.params(Z)) do
-        τ = P(s)
+        ξ = Z(s)
+        τ = P(ξ)
         τₑₘ = embed(learner, τ)
         a = CartesianIndex.(repeat(batch.action, inner = N), 1:(N*batch_size))
 
-        z = flatten_batch(Z(s, τₑₘ))
+        z = flatten_batch(Z(s, τₑₘ; features = ξ))
         q = z[a]
 
         TD_error = reshape(target, N′, 1, batch_size) .- reshape(q, 1, N, batch_size)
