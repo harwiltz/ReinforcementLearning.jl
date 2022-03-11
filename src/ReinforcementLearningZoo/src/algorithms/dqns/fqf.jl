@@ -61,6 +61,7 @@ function FQFLearner(
     header = Dense(latent_size, na, init = init_fn(rng))
     fraction_proposer = Chain(Dense(latent_size, N + 1, sigmoid, init = init_fn(rng)),
                               x -> cumsum(x; dims = 1),
+                              # x -> x) |> gpu
                               x -> x[1:N,:] ./ x[end:end,:]) |> gpu
     approximator = NeuralNetworkApproximator(model = ImplicitQuantileNet(state_embedder,
                                                                          fraction_embedder,
@@ -261,8 +262,9 @@ function RLBase.update!(learner::FQFLearner, batch::NamedTuple)
     zₗ = flatten_batch(Z(s, τ̂ₑₘₗ; features = ξ))
     zᵣ = flatten_batch(Z(s, τ̂ₑₘᵣ; features = ξ))
     quantile_grads = @. 2 * z[a] - zₗ[a] - zᵣ[a]
-    js = jacobian(() -> P(ξ), Flux.params(P))
-    update!(P, map(j -> j' * quantile_grads, js))
+    vjp(x) = ein"qb,qb->b"(P(x), reshape(quantile_grads, (learner.N, :)))
+    js = gradient(() -> mean(vjp(ξ)), Flux.params(P))
+    update!(P, js)
 
     is_use_PER ? updated_priorities : nothing
 end
